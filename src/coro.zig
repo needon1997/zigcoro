@@ -13,6 +13,8 @@ const std = @import("std");
 const builtin = @import("builtin");
 const base = @import("coro_base.zig");
 const Executor = @import("executor.zig").Executor;
+const Channel = @import("executor.zig").Channel;
+const run = @import("asyncio.zig").run;
 const libcoro_options = @import("libcoro_options");
 
 const log = std.log.scoped(.libcoro);
@@ -248,7 +250,7 @@ const VoidSignature = CoroT.Signature.init((struct {
     fn func() void {}
 }).func, .{});
 
-const CoroT = struct {
+pub const CoroT = struct {
     const Options = struct {
         YieldT: type = void,
         InjectT: type = void,
@@ -287,7 +289,7 @@ const CoroT = struct {
         }
     };
 
-    fn fromFunc(comptime Func: anytype, comptime options: Options) type {
+    pub fn fromFunc(comptime Func: anytype, comptime options: Options) type {
         return fromSig(Signature.init(Func, options));
     }
 

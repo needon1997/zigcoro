@@ -2,6 +2,8 @@ const std = @import("std");
 const xev = @import("xev");
 const libcoro = @import("coro.zig");
 const CoroExecutor = @import("executor.zig").Executor;
+const Channel = @import("executor.zig").Channel;
+const ChannelConfig = @import("executor.zig").ChannelConfig;
 
 pub const xasync = libcoro.xasync;
 pub const xawait = libcoro.xawait;
@@ -58,6 +60,39 @@ pub fn run(
     defer frame.deinit();
     try runCoro(exec, frame);
     return xawait(frame);
+}
+
+const SelectChan = Channel(usize, ChannelConfig.oneshot);
+
+pub fn xselect(tuples: anytype) !void {
+    var chan = SelectChan.init(null);
+    defer chan.close();
+    comptime var idx: usize = 0;
+
+    inline for (tuples) |tuple| {
+        const Gen = struct {
+            const Self = @This();
+            func: @TypeOf(tuple[0]),
+            args: @TypeOf(tuple[1]),
+            cb: @TypeOf(tuple[2]),
+            fn run(self: Self, _chan: *SelectChan, _idx: usize) anyerror!void {
+                const ret =
+                    if (@typeInfo(@TypeOf(self.func)).Fn.return_type == std.builtin.Type.ErrorUnion)
+                    try @call(.always_inline, self.func, self.args)
+                else
+                    @call(.always_inline, self.func, self.args);
+                try _chan.send(_idx);
+                @call(.always_inline, self.cb, .{ret});
+            }
+        };
+        const _gen: Gen = .{ .func = tuple[0], .args = tuple[1], .cb = tuple[2] };
+        _ = try xasync(Gen.run, .{ _gen, &chan, idx }, tuple[3]);
+
+        idx += 1;
+    }
+
+    _ = chan.recv();
+    return;
 }
 
 /// Run a coroutine to completion.
@@ -253,8 +288,9 @@ fn Readable(comptime T: type, comptime StreamT: type) type {
     return struct {
         const Self = T;
         const ReadResult = xev.ReadError!usize;
-        pub fn read(self: Self, buf: xev.ReadBuffer) !usize {
+        pub fn read(self: Self, buf: []u8) !usize {
             const ResultT = ReadResult;
+            const xev_buf = xev.ReadBuffer{ .slice = buf };
             const Data = struct {
                 result: ResultT = undefined,
                 frame: ?Frame = null,
@@ -282,7 +318,7 @@ fn Readable(comptime T: type, comptime StreamT: type) type {
 
             const loop = getExec(self.exec).loop;
             var c: xev.Completion = .{};
-            self.stream().read(loop, &c, buf, Data, &data, &Data.callback);
+            self.stream().read(loop, &c, xev_buf, Data, &data, &Data.callback);
 
             try waitForCompletion(self.exec, &c);
 
@@ -295,8 +331,9 @@ fn Writeable(comptime T: type, comptime StreamT: type) type {
     return struct {
         const Self = T;
         const WriteResult = xev.WriteError!usize;
-        pub fn write(self: Self, buf: xev.WriteBuffer) !usize {
+        pub fn write(self: Self, buf: []const u8) !usize {
             const ResultT = WriteResult;
+            const xev_buf = xev.WriteBuffer{ .slice = buf };
             const Data = struct {
                 result: ResultT = undefined,
                 frame: ?Frame = null,
@@ -324,7 +361,7 @@ fn Writeable(comptime T: type, comptime StreamT: type) type {
 
             const loop = getExec(self.exec).loop;
             var c: xev.Completion = .{};
-            self.stream().write(loop, &c, buf, Data, &data, &Data.callback);
+            self.stream().write(loop, &c, xev_buf, Data, &data, &Data.callback);
 
             try waitForCompletion(self.exec, &c);
             return data.result;

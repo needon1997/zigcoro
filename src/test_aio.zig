@@ -209,7 +209,7 @@ fn fileRW() !void {
     const xfile = try xev.File.init(f);
     const file = aio.File.init(env.exec, xfile);
     var write_buf = [_]u8{ 1, 1, 2, 3, 5, 8, 13 };
-    const write_len = try file.write(.{ .slice = &write_buf });
+    const write_len = try file.write(&write_buf);
     try std.testing.expectEqual(write_len, write_buf.len);
     try f.sync();
     const f2 = try std.fs.cwd().openFile(path, .{});
@@ -217,7 +217,7 @@ fn fileRW() !void {
     const xfile2 = try xev.File.init(f2);
     const file2 = aio.File.init(env.exec, xfile2);
     var read_buf: [128]u8 = undefined;
-    const read_len = try file2.read(.{ .slice = &read_buf });
+    const read_len = try file2.read(&read_buf);
     try std.testing.expectEqual(write_len, read_len);
     try std.testing.expect(std.mem.eql(u8, &write_buf, read_buf[0..read_len]));
 }
@@ -312,7 +312,7 @@ fn tcpServer(info: *ServerInfo) !void {
     try server.close();
 
     var recv_buf: [128]u8 = undefined;
-    const recv_len = try conn.read(.{ .slice = &recv_buf });
+    const recv_len = try conn.read(&recv_buf);
     const send_buf = [_]u8{ 1, 1, 2, 3, 5, 8, 13 };
     try std.testing.expect(std.mem.eql(u8, &send_buf, recv_buf[0..recv_len]));
 }
@@ -324,7 +324,7 @@ fn tcpClient(info: *ServerInfo) !void {
     defer client.close() catch unreachable;
     _ = try client.connect(address);
     var send_buf = [_]u8{ 1, 1, 2, 3, 5, 8, 13 };
-    const send_len = try client.write(.{ .slice = &send_buf });
+    const send_len = try client.write(&send_buf);
     try std.testing.expectEqual(send_len, 7);
 }
 
@@ -410,7 +410,7 @@ test "aio concurrent sleep env" {
     try std.testing.expect(after < (before + 23));
 }
 
-const UsizeChannel = libcoro.Channel(usize, .{ .capacity = 10 });
+const UsizeChannel = libcoro.Channel(usize, libcoro.ChannelConfig{ .sized = 10 });
 
 fn sender(chan: *UsizeChannel, count: usize) !void {
     defer chan.close();
@@ -488,4 +488,42 @@ test "aio mix async recurse in sleep and notification" {
     defer t.deinit();
 
     try t.run(asyncRecurseSleepAndNotification);
+}
+
+fn add(x: u32, y: u32) u32 {
+    std.debug.print("add\n", .{});
+
+    return x +| y;
+}
+
+fn sub(x: u32, y: u32) u32 {
+    std.debug.print("sub\n", .{});
+
+    return x -| y;
+}
+
+fn report_add(sum: u32) void {
+    std.debug.print("{}\n", .{sum});
+}
+
+fn report_sub(sum: u32) void {
+    std.debug.print("{}\n", .{sum});
+}
+
+fn selecMain() !void {
+    const stack_size: usize = 1024 * 16;
+    const stack1 = try libcoro.stackAlloc(env.allocator, stack_size);
+    defer env.allocator.free(stack1);
+    const stack2 = try libcoro.stackAlloc(env.allocator, stack_size);
+    defer env.allocator.free(stack2);
+    try aio.xselect(.{ .{ add, .{ @as(u32, 1), @as(u32, 2) }, report_add, stack1 }, .{ sub, .{ @as(u32, 1), @as(u32, 1) }, report_sub, stack2 } });
+}
+
+test "select" {
+    const t = try AioTest.init();
+    defer t.deinit();
+
+    aio.run(null, selecMain, .{}, null) catch |err| {
+        std.debug.print("{}", .{err});
+    };
 }

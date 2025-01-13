@@ -49,18 +49,45 @@ pub const Executor = struct {
     }
 };
 
-pub const ChannelConfig = struct {
-    capacity: usize = 1,
+pub const ChannelTypeTag = enum {
+    sized,
+    oneshot,
+};
+
+pub const ChannelConfig = union(ChannelTypeTag) {
+    sized: usize,
+    oneshot: void,
+
+    pub fn get_size(config: ChannelConfig) usize {
+        return switch (config) {
+            .oneshot => 1,
+            .sized => |_sized| _sized,
+        };
+    }
+
+    pub fn get_oneshot(config: ChannelConfig) bool {
+        return switch (config) {
+            .oneshot => true,
+            .sized => |_| false,
+        };
+    }
+};
+
+pub const ChanError = error{
+    ChannelClose,
 };
 
 pub fn Channel(comptime T: type, comptime config: ChannelConfig) type {
-    const Storage = ArrayQueue(T, config.capacity);
+    const oneshot = config.get_oneshot();
+    const size = config.get_size();
+    const Storage = ArrayQueue(T, size);
 
     return struct {
         const Self = @This();
 
         q: Storage = .{},
         closed: bool = false,
+        oneshot: bool = oneshot,
 
         space_notif: Condition,
         value_notif: Condition,
@@ -79,8 +106,11 @@ pub fn Channel(comptime T: type, comptime config: ChannelConfig) type {
         }
 
         pub fn send(self: *Self, val: T) !void {
-            if (self.closed) @panic("Cannot send on closed Channel");
-            while (self.q.space() == 0) self.space_notif.wait();
+            if (self.closed) return ChanError.ChannelClose;
+            while (self.q.space() == 0) {
+                self.space_notif.wait();
+                if (self.closed) return ChanError.ChannelClose;
+            }
             try self.q.push(val);
             self.value_notif.signal();
         }
@@ -89,6 +119,9 @@ pub fn Channel(comptime T: type, comptime config: ChannelConfig) type {
             while (!(self.closed or self.q.len() != 0)) self.value_notif.wait();
             if (self.closed and self.q.len() == 0) return null;
             const out = self.q.pop().?;
+            if (self.oneshot) {
+                self.closed = true;
+            }
             self.space_notif.signal();
             return out;
         }
